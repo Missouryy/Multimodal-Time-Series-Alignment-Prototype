@@ -1,0 +1,12 @@
+streamlit>=1.36.0
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+librosa>=0.10.1
+soundfile>=0.12.1
+opencv-python-headless>=4.9.0.80
+fastdtw>=0.3.4
+matplotlib>=3.8
+plotly>=5.22
+python-dateutil>=2.9
+psycopg2-binary>=2.9.9
