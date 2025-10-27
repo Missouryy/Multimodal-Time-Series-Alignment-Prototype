@@ -27,6 +27,14 @@ class TimeSeries:
         """Return a tidy DataFrame with columns: time, v0..v{D-1}."""
         n = self.values.shape[1] if self.values.ndim == 2 else 1
         vals = self.values if self.values.ndim == 2 else self.values.reshape(-1, 1)
+        
+        # 确保时间戳和值的长度匹配
+        if len(self.timestamps) != len(vals):
+            raise ValueError(
+                f"Timestamps length ({len(self.timestamps)}) does not match values length ({len(vals)}). "
+                f"This may occur if using an encoder that changes the number of data points."
+            )
+        
         cols = [f"v{i}" for i in range(n)]
         return pd.DataFrame({"time": self.timestamps, **{c: vals[:, i] for i, c in enumerate(cols)}})
 

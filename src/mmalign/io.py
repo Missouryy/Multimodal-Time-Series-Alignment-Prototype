@@ -58,7 +58,7 @@ def load_audio_timeseries(path: str, name: str, sr: int = 16000, hop_length: int
 
 # --- Video -------------------------------------------------------------------
 
-def load_video_timeseries(path: str, name: str) -> TimeSeries:
+def load_video_timeseries(path: str, name: str, save_frames: bool = False, max_frames: int = 1000) -> TimeSeries:
     import cv2
 
     cap = cv2.VideoCapture(path)
@@ -67,24 +67,52 @@ def load_video_timeseries(path: str, name: str) -> TimeSeries:
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps is None or fps <= 0:
         fps = 25.0
+    
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
     values: List[List[float]] = []
     times: List[float] = []
+    frames: List[np.ndarray] = [] if save_frames else None
     idx = 0
+    
+    # 如果帧数太多，采样
+    frame_skip = max(1, total_frames // max_frames) if save_frames and total_frames > max_frames else 1
+    
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+        
         # Compute mean RGB per frame
         mean_vals = frame.mean(axis=(0, 1))  # B, G, R
         # Convert BGR to RGB order
         mean_rgb = [float(mean_vals[2]), float(mean_vals[1]), float(mean_vals[0])]
         values.append(mean_rgb)
         times.append(idx / fps)
+        
+        # 保存原始帧（用于 CNN 编码器），BGR 转 RGB
+        if save_frames and idx % frame_skip == 0 and len(frames) < max_frames:
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames.append(rgb_frame)
+        
         idx += 1
     cap.release()
+    
     if len(times) == 0:
         raise ValueError("No frames decoded from video")
-    return TimeSeries(name=name, modality=ModalityType.VIDEO, timestamps=np.asarray(times, dtype=float), values=np.asarray(values, dtype=float), metadata={"fps": fps})
+    
+    metadata = {"fps": fps}
+    if save_frames and frames:
+        metadata["frames"] = frames
+        metadata["frame_indices"] = list(range(0, idx, frame_skip))[:len(frames)]
+    
+    return TimeSeries(
+        name=name, 
+        modality=ModalityType.VIDEO, 
+        timestamps=np.asarray(times, dtype=float), 
+        values=np.asarray(values, dtype=float), 
+        metadata=metadata
+    )
 
 
 # --- Text (SRT or time-text) -------------------------------------------------
@@ -162,7 +190,23 @@ def load_text_srt_timeseries(path: str, name: str, bin_size: float = 0.5) -> Tim
             while i < len(lines) and lines[i].strip() == "":
                 i += 1
         t, c = _bin_counts(segments, bin_size=bin_size)
-        return TimeSeries(name=name, modality=ModalityType.TEXT, timestamps=t, values=c.reshape(-1, 1), metadata={"bin_size": bin_size})
+        
+        # 保存原始文本段落和时间戳，用于高级编码器（如 BERT）
+        text_segments = [text for _, _, text in segments]
+        segment_timestamps = np.array([s for s, _, _ in segments])
+        
+        return TimeSeries(
+            name=name, 
+            modality=ModalityType.TEXT, 
+            timestamps=t, 
+            values=c.reshape(-1, 1), 
+            metadata={
+                "bin_size": bin_size,
+                "text_segments": text_segments,  # 原始文本内容
+                "segment_timestamps": segment_timestamps,  # 文本段落的时间戳
+                "segments": segments  # 完整的段落信息 (start, end, text)
+            }
+        )
     # Fallback: try simple time,text format (CSV or TSV) with 'time' column
     try:
         df = pd.read_csv(path)
@@ -172,6 +216,12 @@ def load_text_srt_timeseries(path: str, name: str, bin_size: float = 0.5) -> Tim
         if "time" not in df.columns:
             raise ValueError("text file must have a 'time' column")
         df = df.sort_values("time")
+        
+        # 保存原始文本内容（如果存在）
+        text_segments = None
+        if "text" in df.columns:
+            text_segments = df["text"].astype(str).tolist()
+        
         if "value" in df.columns:
             vals = pd.to_numeric(df["value"], errors="coerce").fillna(0).to_numpy()
         else:
@@ -180,6 +230,18 @@ def load_text_srt_timeseries(path: str, name: str, bin_size: float = 0.5) -> Tim
                 vals = df["text"].astype(str).apply(lambda s: len(s.split())).to_numpy()
             else:
                 vals = np.ones(len(df), dtype=float)
-        return TimeSeries(name=name, modality=ModalityType.TEXT, timestamps=df["time"].astype(float).to_numpy(), values=_ensure_2d(vals))
+        
+        metadata = {}
+        if text_segments is not None:
+            metadata["text_segments"] = text_segments
+            metadata["segment_timestamps"] = df["time"].astype(float).to_numpy()
+        
+        return TimeSeries(
+            name=name, 
+            modality=ModalityType.TEXT, 
+            timestamps=df["time"].astype(float).to_numpy(), 
+            values=_ensure_2d(vals),
+            metadata=metadata
+        )
     except Exception as e:
         raise ValueError(f"Cannot parse text file: {e}")
